@@ -20,20 +20,34 @@ class LandingPageCrawler:
         self.browser = None
 
     async def init_browser(self):
-        """初始化浏览器"""
+        """初始化浏览器，增加存活检测"""
+        if self.browser:
+            try:
+                # 尝试检查浏览器是否仍然响应
+                await self.browser.version()
+            except:
+                self.browser = None
+
         if not self.browser:
             self.browser = await launch({
                 'headless': self.headless,
-                'args': ['--no-sandbox', '--disable-setuid-sandbox'],
+                'args': ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
                 'defaultViewport': {'width': 1920, 'height': 1080},
                 'executablePath': self.executable_path
             })
 
     async def close_browser(self):
-        """关闭浏览器"""
+        """关闭浏览器 (添加异常保护防止 Windows 下的事件循环冲突)"""
         if self.browser:
-            await self.browser.close()
-            self.browser = None
+            try:
+                await self.browser.close()
+            except Exception:
+                try:
+                    await self.browser.disconnect()
+                except:
+                    pass
+            finally:
+                self.browser = None
 
     async def crawl(self, url):
         """
@@ -67,11 +81,11 @@ class LandingPageCrawler:
             
             # 3. 提取图片 (移植 p308.js 的去重逻辑)
             result['images'] = await page.evaluate('''() => {
-                const MIN_SIZE = 300;
+                const MIN_SIZE = 250;
                 const getCoreUrlAndSize = (url) => {
                     if (!url) return { coreUrl: null, size: 0 };
                     let cleanedUrl = url.split('?')[0];
-                    const match = cleanedUrl.match(/-(\d+)\.(jpg|jpeg|png|webp)$/i);
+                    const match = cleanedUrl.match(/-(\d+)\.(jpg|jpeg|png|webp|avif|gif)$/i);
                     let size = match ? parseInt(match[1]) : 0;
                     let coreUrl = match ? cleanedUrl.replace("-" + match[1], "") : cleanedUrl;
                     return { coreUrl, size };
@@ -94,9 +108,13 @@ class LandingPageCrawler:
 
         except Exception as e:
             result['error'] = str(e)
-            print(f"❌ 爬取失败: {e}")
+            print(f"❌ 爬取落地页失败: {e}")
         finally:
-            await page.close()
+            try:
+                if page:
+                    await page.close()
+            except Exception as e:
+                print(f"⚠️ 关闭页面失败 (可能由于请求超时或浏览器崩溃): {e}")
             
         return result
 

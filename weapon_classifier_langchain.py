@@ -1,3 +1,11 @@
+import openpyxl.worksheet.datavalidation
+# Monkey patch to solve openpyxl DataValidation issue
+old_init = openpyxl.worksheet.datavalidation.DataValidation.__init__
+def new_init(self, *args, **kwargs):
+    kwargs.pop('id', None)
+    old_init(self, *args, **kwargs)
+openpyxl.worksheet.datavalidation.DataValidation.__init__ = new_init
+
 import asyncio
 import json
 import base64
@@ -49,9 +57,9 @@ API_KEY = "78cbeed3-eea7-4832-ba9c-b3fefeff316f"
 BASE_URL = "https://ark.cn-beijing.volces.com/api/v3"
 
 # 模型配置
-MODEL_CLASSIFY = "doubao-seed-1-8-251228"
-MODEL_TEXT_AUDIT = "doubao-seed-1-8-251228"
-MODEL_IMAGE_AUDIT = "doubao-seed-1-8-251228"
+MODEL_CLASSIFY = "doubao-seed-2-0-mini-260215"
+MODEL_TEXT_AUDIT = "doubao-seed-2-0-mini-260215"
+MODEL_IMAGE_AUDIT = "doubao-seed-2-0-pro-260215"
 
 MAX_WORKERS = 5
 
@@ -61,18 +69,37 @@ llm_text = ChatOpenAI(api_key=API_KEY, base_url=BASE_URL, model=MODEL_TEXT_AUDIT
 llm_vision = ChatOpenAI(api_key=API_KEY, base_url=BASE_URL, model=MODEL_IMAGE_AUDIT, temperature=0.0)
 
 def detect_browser_path():
-    """探测本地浏览器路径"""
+    """广域探测本地浏览器路径 (C/D/E 盘及 AppData)"""
     import os
+    
+    # 获取用户本地 AppData 这种特殊的 Chrome 静默安装目录
+    user_local_chrome = os.path.join(os.environ.get('LOCALAPPDATA', ''), r"Google\Chrome\Application\chrome.exe")
+    
     possible_paths = [
+        # --- C 盘官方安装 ---
         r"C:\Program Files\Google\Chrome\Application\chrome.exe",
         r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+        user_local_chrome,
+        
+        # --- D 盘常用安装 ---
+        r"D:\Program Files\Google\Chrome\Application\chrome.exe",
+        r"D:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+        
+        # --- E 盘备选 ---
+        r"E:\Program Files\Google\Chrome\Application\chrome.exe",
+        r"E:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+        
+        # --- 备选 Edge (后备系统) ---
         r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
-        r"C:\Program Files\Microsoft\Edge\Application\msedge.exe"
+        r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
     ]
+    
     for p in possible_paths:
-        if os.path.exists(p):
-            print(f"✅ Found browser at: {p}")
+        if p and os.path.exists(p):
+            print(f"✅ 系统已就绪，定位到浏览器: {p}")
             return p
+            
+    print("⚠️  警告：未能在默认目录发现浏览器，尝试使用系统默认调用...")
     return None
 
 # 初始化工具类
@@ -122,29 +149,28 @@ def create_text_audit_chain():
 #### 1. 刀具类文本审核
 - **品类定义界定：** 仅允许宣传**“厨房烹饪”、“办公/文具”、“儿童玩具（塑料/纸质）”**三类用途；
 - **武器/防身宣传违规（必须拦截）：** 文本中严禁出现**“攻击（attack）”、“伤害”、“自卫/防身（self-defense/defense）”、“战术（tactical）”、“生存（survival）”、“户外露营（outdoor）”**（若语境暗示攻击性）等词汇；一旦文案宣传上述内容，视为【武器宣传违规】。
-- **暗示违规：** 严禁提及**“军用”、“特种兵”、“血槽”、“刺穿”**等暗示高杀伤力的描述，视为【武器宣传违规】。
+- **暗示违规：** 严禁提及**“军用”、“特种兵”、“血槽”、“刺穿”**等暗示高杀杀伤力的描述，视为"武器宣传违规"。
 
 #### 2. 武器/刑具类违规
 - **黑名单关键词（一票否决）：** 标题或描述中出现**“Weapon（武器）”、“Stun/Taser/Electric shock（电击枪/器/棒）”、“Pepper spray（防狼喷雾）”、“Mace（催泪剂/狼牙棒）”、“Knuckles（指虎）”、“Slingshot（弹弓）”、“Baton（警棍）”、“Handcuffs（手铐）”、“Crossbow/Compound bow（弩/复合弓）”、“Metal dart（金属飞镖）”**等词汇，判定为【武器宣传违规】。
+- **打击、穿刺与隐蔽类工具违规：** 严禁宣传用于打击（如甩棍、鞭子）、穿刺（如军用刺刀、峨眉刺）以及具有隐蔽伪装特性的工具（如拐杖剑、皮带刀），一经发现判定为【武器宣传违规】。
+- **攻击性动作识别：** 识别描述中出现的“破坏/暴力”相关功能演示，判定为武器宣传违规。
+
+#### 3. 附加判定原则
+- **武器优先原则：** 当产品同时具备刀具（有刃）和武器（暗器/战术）双重属性时，强制判定为"武器宣传违规"。
+- **产品本质防误判：** 增加对产品本质的逻辑校验，如识别到“贴纸(Sticker)”、“印花”、“模型玩具(无杀伤力)”等关键词，明确产品仅是周边装饰或2D图案而非真实刀具武器时，不视为违规，判定为“宣传通过”。
 
 ### 二、审核流程（按步骤执行）
-1. **内容提取与状态判定：** 
-   - 如果文本为空、显示“404/无法打开”、或者内容包含“{{{{error":"Not authorized."}}}}”、“Access Denied”、“Forbidden”等授权报错，判定结果为“无需处理”。
-2. **规则匹配：** 扫描文本，命中上述违规词汇或用途，判定为“武器宣传违规”。
-3. **合格判定：** 若不涉及任何上述违规内容且内容非报错信息，判定为“宣传通过”。
+1. **规则匹配：** 扫描文本，命中上述违规词汇或用途，判定为“武器宣传违规”。
+2. **合格判定：** 若不涉及任何上述违规内容，判定为“宣传通过”。
 
-### 三、约束规则
-- 输出请严格遵循以下格式（JSON 中的键名必须与飞书列名完全一致）： 
-
-
+### 三、输出要求
+输出请严格遵循以下格式：
 ---思考过程---
-[详细分析步骤]
+[详细分析步骤，包括是否命中违规词汇、违规类型等]
 
 ---最终结论---
-{{{{
-  "{FIELD_OUT_PROPAGANDA_RESULT}": "必须从 [无需处理, 武器宣传违规, 宣传通过, 需人工处理] 中精准选择一个",
-  "{FIELD_OUT_PROPAGANDA_THINK}": "[这里填入你的思考过程分析]"
-}}}}
+[结果+理由，如“武器宣传违规，出现手铐等违规词汇”]
 """
     prompt = ChatPromptTemplate.from_messages([
         ("system", system_prompt),
@@ -153,7 +179,7 @@ def create_text_audit_chain():
     return prompt | llm_text | StrOutputParser()
 
 def create_image_audit_chain():
-    """图片审核 Chain (多模态)"""
+    """图片审核 Chain (多模态)""" 
     return llm_vision
 
 # ================= 业务逻辑 =================
@@ -167,38 +193,55 @@ async def audit_images_async(image_urls: List[str]):
         }
     
     # 构造多模态消息
-    prompt_text = f"""你将扮演**专业商品图片审核员**，依据《审核规则》对商品图片进行精准审核，核心目标是识别图片中的物体特征、材质及演示场景，输出合规性判定结果及整改方向。
+    prompt_text = f"""你将扮演专业商品图片审核员，依据《审核规则》对商品图片进行精准审核，核心目标是识别图片中的物体特征、材质、演示场景及图片内文字内容，输出合规性判定结果及整改方向。
+
+以下是需要审核的商品图片信息：
+<product_image_info>
+{{{{PRODUCT_IMAGE_INFO}}}}
+</product_image_info>
 
 ### 一、审核规则（必严格遵循）
 #### 1. 刀具类图片审核
-- **违规特征（禁止出现）：** 血槽、锯齿、战术涂层（迷彩/全黑）、快速开刀鳍（Flips）、指环扣；折叠刀（非办公用）、蝴蝶刀、户外求生刀。
-- **违规场景（禁止出现）：** 切割硬物（非食材/纸张）、刺穿动作演示；背景为户外战术、野外求生场景。
-- **合规范围（仅允许）：** 清晰可辨的厨房刀具（透明包装）、陶瓷刀、美工刀、塑料萝卜刀。
+- **违规特征（禁止出现）**：血槽、锯齿、战术涂层（迷彩/全黑）、快速开刀鳍（Flips）、指环扣；折叠刀（非办公用）、蝴蝶刀、户外求生刀。
+- **违规场景（禁止出现）**：切割硬物（非食材/纸张）、刺穿动作演示；背景为户外战术、野外求生场景。
+- **合规范围（仅允许）**：清晰可辨的厨房刀具（透明包装）、陶瓷刀、美工刀、塑料萝卜刀。
 
 #### 2. 武器类图片审核
-- **违规产品（禁止出现）：** 指虎（含戒指/饰品形状）、弹弓（含激光/红外/强力型）、飞镖（含金属飞镖）、狼牙棒（Mace club）、甩棍/警棍、弩/复合弓（Crossbow/Compound bow）。
-- **违规功能（禁止出现）：** 外形似日常用品（手电筒/笔/梳子）但露出电击探头、电弧或隐藏刀刃；防狼喷雾（Pepper spray）、电击枪/电击器/电击棒（Taser/Electric shock device）、催泪剂（Mace）。
-- **违规演示（禁止出现）：** 击破玻璃、电击人体/模型、攻击性握持姿态、喷射刺激性气体/液体。
+- **违规产品（禁止出现）**：指虎（含戒指/饰品形状）、弹弓（含激光/红外/强力型）、飞镖（含金属飞镖）、狼牙棒（Mace club）、甩棍/警棍、弩/复合弓（Crossbow/Compound bow）。
+- **打击、穿刺与隐蔽类违规（禁止出现）**：专用于打击的钝器或长鞭、专用于穿刺的尖锐武器（如峨眉刺、军用刺刀），以及伪装成日常用品（如拐杖伞中藏剑、皮带刃、梳子刀等）的隐蔽类危险工具。
+- **违规功能（禁止出现）**：防狼喷雾（Pepper spray）、电击枪/电击器/电击棒（Taser/Electric shock device）、催泪剂（Mace）。
+- **违规演示（禁止出现）**：击破玻璃、电击人体/模型、攻击性握持姿态、喷射刺激性气体/液体。
+- **攻击性动作识别：** 识别描述或画面中出现的“破坏/暴力”相关功能演示，均视为违规。
 
 #### 3. 刑具类图片审核
-- **违规产品（禁止出现）：** 手铐（金属/硬质）、锁链、脚镣、枷锁或其他限制人身自由的器具演示或真实展示。
+- **违规产品（禁止出现）**：手铐（金属/硬质）、锁链、脚镣、枷锁或其他限制人身自由的器具演示或真实展示。
+
+#### 4. 图片内文字审核补充规则
+- 若图片中出现文字，需单独提取并审核：若文字内容涉及武器宣传（如“威力强劲”“攻击必备”等暗示武器功能或用途的描述），则判定为“武器宣传违规”。
+
+#### 5. 附加判定原则
+- **武器优先原则：** 当产品同时具备刀具（有刃）和武器（暗器/战术）双重属性时，强制判定为"武器违规"。
+- **产品本质防误判：** 增加对图片内容与产品本质的逻辑校验，如画面或文字表明实质为“贴纸(Sticker)”、“印花图案”、“无攻击性模型/玩具装饰”，即使图案涉及真实刀具/武器特征，也不视为违规，判定为“产品通过”。
+- **视觉文本冲突处理：** 以图片实物形态为判定核心。当图片内的文字描述与实物的视觉表现发生冲突时（例如夸大宣传或规避描述），必须优先以实物的清晰物理形态作为判定是否违规的最终依据。
 
 ### 二、审核流程（按步骤执行）
-1. **图片信息提取：** 识别图片中的物体类型、核心特征、演示动作及背景场景。
-2. **状态判定：** 若图片内容显示为“404/无法显示/错误页面”，归类为“无需处理”。
-3. **分权判定：** 根据识别结果，将结论严格匹配至下述五个选项之一。
+1. **图片信息提取**：识别图片中的物体类型、核心特征、演示动作、背景场景及图片内所有文字内容。
+2. **分权判定**：
+   - 若图片物体违反刀具类规则，标记“刀具违规”；
+   - 若图片物体违反武器类规则，标记“武器违规”；
+   - 若图片物体违反刑具类规则，标记“刑具违规”；
+   - 若图片内文字违反武器宣传规则，标记“武器宣传违规”；
+   - 若图片物体及文字均无违规，标记“产品通过”；
+   - 若图片物体违规且文字也违规（如武器违规+武器宣传违规），需同时输出两类违规结论。
 
-### 三、约束规则
-- 输出请严格遵循以下格式（JSON 中的键名必须与飞书列名完全一致）：
+### 三、输出格式要求（严格遵循）
+直接输出符合要求的结论，格式为“结论+理由”。若存在多项违规，需依次列出结论并分别说明理由。示例：
+- 仅物体违规：“刀具违规，出现锯齿特征”
+- 仅文字违规：“武器宣传违规，文字含‘强力攻击’等宣传内容”
+- 物体+文字均违规：“武器违规（出现电击棒），武器宣传违规（文字含‘电击威力大’）”
+- 无违规：“产品通过，未发现违规特征及宣传内容”
 
----思考过程---
-[详细分析步骤]
-
----最终结论---
-{{
-  "{FIELD_OUT_PRODUCT_RESULT}": "必须从 [无需处理, 刀具违规, 武器违规, 刑具违规, 产品通过, 需人工处理] 中精准选择一个",
-  "{FIELD_OUT_PRODUCT_THINK}": "[这里填入你的分析过程]"
-}}
+请在<判断>标签内输出最终审核结果，不得包含任何额外内容。
 """
     content = [{"type": "text", "text": prompt_text}]
     for url in image_urls:
@@ -213,15 +256,27 @@ async def audit_images_async(image_urls: List[str]):
         response = await llm_vision.ainvoke([("user", content)])
         full_text = response.content
         
-        # 拆分思考过程和结论
-        think = full_text
-        result = full_text
-        if "---最终结论---" in full_text:
-            parts = full_text.split("---最终结论---")
-            think = parts[0].replace("---思考过程---", "").strip()
-            result = parts[1].strip()
-        
-        return {"think": think, "result": result}
+        # 提取 <判断> 标签内的内容
+        content_in_tag = ""
+        import re
+        match = re.search(r'<判断>(.*?)</判断>', full_text, re.DOTALL)
+        if match:
+            content_in_tag = match.group(1).strip()
+        else:
+            # 如果没找到标签，退而求其次使用全文
+            content_in_tag = full_text.strip()
+            
+        # 按照新格式解析：结论 + 理由
+        # 将第一个逗号或顿号前的内容视作结果，全文字视作理由（思考过程）
+        # 示例："刀具违规，出现锯齿特征"
+        if "，" in content_in_tag:
+            result_val = content_in_tag.split("，")[0].strip()
+        elif "," in content_in_tag:
+            result_val = content_in_tag.split(",")[0].strip()
+        else:
+            result_val = content_in_tag # 只有结论的情况
+            
+        return {"think": content_in_tag, "result": f'{{ "{FIELD_OUT_PRODUCT_RESULT}": "{result_val}", "{FIELD_OUT_PRODUCT_THINK}": "{content_in_tag}" }}'}
     except Exception as e:
         err_str = str(e)
         # 专门处理图片过大的报错 (OversizeImage)
@@ -386,13 +441,23 @@ async def main_async():
                                 text_audit_chain = create_text_audit_chain()
                                 text_raw = await text_audit_chain.ainvoke({"text_content": crawl_res["text"][:50000]})
                                 
-                                # 使用强力提取函数解析文本审核
-                                res_json_text = extract_json_from_text(text_raw)
-                                if res_json_text:
-                                    record_fields.update(res_json_text)
+                                # 解析：从 ---最终结论--- 提取内容
+                                propaganda_res_val = ""
+                                if "---最终结论---" in text_raw:
+                                    propaganda_res_val = text_raw.split("---最终结论---")[-1].strip()
                                 else:
-                                    record_fields[FIELD_OUT_PROPAGANDA_RESULT] = f"解析失败，原始输出: {text_raw[:100]}..."
-                                    record_fields[FIELD_OUT_PROPAGANDA_THINK] = text_raw
+                                    propaganda_res_val = text_raw.strip()
+                                
+                                # 拆分：结果 + 理由
+                                if "，" in propaganda_res_val:
+                                    p_result = propaganda_res_val.split("，")[0].strip()
+                                elif "," in propaganda_res_val:
+                                    p_result = propaganda_res_val.split(",")[0].strip()
+                                else:
+                                    p_result = propaganda_res_val
+                                    
+                                record_fields[FIELD_OUT_PROPAGANDA_RESULT] = p_result 
+                                record_fields[FIELD_OUT_PROPAGANDA_THINK] = propaganda_res_val
 
                                 # B. 产品图片审核
                                 img_data = await audit_images_async(crawl_res["images"])

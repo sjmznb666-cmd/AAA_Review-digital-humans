@@ -134,9 +134,16 @@ class FeishuAPI:
                         print(f"✅ File uploaded to Feishu: {file_token}")
                         return file_token
                     else:
+                        msg = str(res_data.get('msg', '')).lower()
                         print(f"❌ Feishu upload failed: {res_data.get('msg')}")
                         if res_data.get("code") != 0:
                             print(f"Feishu Upload Error Details: {res_data}")
+                            
+                        # 如果是 Token 过期导致的失败，立即重新获取 Token 并更新 header
+                        if "token" in msg or res_data.get("code") in [99991663, 99991668]:
+                            print("🔄 检测到 Token 可能已过期，尝试重新获取...")
+                            if self.get_tenant_access_token():
+                                headers["Authorization"] = f"Bearer {self.tenant_access_token}"
                         
                         retry_count += 1
                         if retry_count <= max_retries:
@@ -242,7 +249,18 @@ class FeishuAPI:
                     continue
                 
                 print(f"❌ 飞书写入失败 (Code {code}): {res_data.get('msg')}")
-                return False
+                msg = str(res_data.get("msg", "")).lower()
+                
+                # 处理 Token 过期
+                if "token" in msg or code in [99991663, 99991668]:
+                    print("🔄 检测到 Token 可能已过期，尝试重新获取...")
+                    if self.get_tenant_access_token():
+                        headers["Authorization"] = f"Bearer {self.tenant_access_token}"
+                    attempt += 1
+                    continue
+                    
+                attempt += 1
+                time.sleep(attempt * 2)
             except Exception as e:
                 print(f"❌ 网络/API 异常: {e}")
                 attempt += 1

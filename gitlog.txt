@@ -1,0 +1,16 @@
+﻿commit 5bf820a6faf9f5985fd3cec7b4ba0bf98a1e6728
+Author: goldman <1457665911@qq.com>
+Date:   Tue Mar 24 14:57:44 2026 +0800
+
+    鍒濇鎻愪氦锛氶涔﹁嚜鍔ㄥ寲+澶氭ā鎬佸鏍告牳蹇冪郴缁熶唬鐮?
+A	.gitignore
+A	FEISHU_API.js
+A	FEISHU_API_README.md
+A	FEISHU_API_SUMMARY.md
+A	Violation_ClassifierLangchain.py
+A	feishu_api.py
+A	landing_page_crawler.py
+A	p308.js
+A	package.json
+A	testapi.py
+A	weapon_classifier_langchain.py
